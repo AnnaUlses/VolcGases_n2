@@ -68,6 +68,95 @@ def solve_gases(T,P,f_O2,mCO2tot,mH2Otot):
 # for backwards compatibility
 solve_gases_jit = solve_gases
 
+def solve_gases_nitrogen(T,P,f_o2,mCO2tot,mH2Otot,mN2tot):
+    F1 = np.log(1.0/(M_CO2*x*1.0e6))+C_CO2*P/T+A1
+    F2 = np.log(1.0/(M_H2O*x*100.0))+C_H2O*P/T+A2
+
+    #calculate mol fraction of CO2 and H2O in the magma
+    xCO2tot = (mCO2tot/M_CO2)/x
+    xH2Otot = (mH2Otot/M_H2O)/x
+    xN2tot = (mN2tot/M_N2)/x
+
+    #equilibrium constants
+    #made with Nasa thermodynamic database (Burcat database)
+    K1 = np.exp(-29755.11319228574/T+6.652127716162998)
+    K2 = np.exp(-33979.12369002451/T+10.418882755464773)
+    K3 = np.exp(-96444.47151911151/T+0.22260815074146403)
+
+    #constants
+    C1 = K1/f_O2**0.5
+    C2 = K2/f_O2**0.5
+    C3 = K3/f_O2**2.0
+
+    M_H2O = 18.01528 #Molar mass of H2O (g/mol)
+    M_CO2 = 44.01 #Molar mass of CO2 (g/mol)
+    M_N2 = 28.02 #Molar mass of N2 (g/mol)
+
+    #Solubility constant for CO2 for Mt. Etna composition.
+    #It is equal to the stuff after the second term in Eq. A1 in [1]
+    A1 = -0.4200250000201988 
+    #Solubility constant for H2O for Mt. Etna composition.
+    #It is equal to the stuff after the second term in Eq. A2 in [1]
+    A2 = -2.59560737813789
+    #Inverse of molar mass of magma (mol of magma / g of magma).
+    #See Table 1 in [1]
+    x = 0.01550152865954013
+
+    C_CO2 = 0.14 #!! Solubility constant. See Table 4 in [1] 
+    C_H2O = 0.02 #!! Solubility constant. See Table 6 in [2]
+    a_H2O = 0.54 #!! Solubility constant. See Table 1 in [1]
+    a_CO2 = 1.0 #!! Solubility constant. See Table 1 in [1]
+    d_H2O = 2.3 #!! Solubility constant. See Table 1 in [1]
+
+    [A,B,C] = [27215,6.57,0.0552]
+    f_o2_IW = 10**(-A/T + B + C*(P-1)/T)
+    dIW = np.log10(fo2) - np.log10(f_o2_IW)
+
+    XXSiO2 = 0.4795
+    XXAl2O3 = 0.1732
+    XXTiO2 = 0.0167
+
+    args = P,F1,F2,xCO2tot,xH2Otot,xN2tot,C1,C2,C3,dIW,a_H2O,a_CO2,d_H2O,T
+
+    P_H2O,P_H2,P_CO2,P_CO,P_CH4,alphaG,x_CO2,x_H2O = solve_gases(T,P,f_o2,mCO2tot,mH2Otot) 
+    #guess using previous solve_gases (simpler system)
+    #where do these values go?
+
+    sol = optimize.root(fcn1_nitrogen, args = args, method = 'hybr') #solving for nitrogen in melt
+    #finds zero values of equations in fcn1_nitrogen
+    assert sol.success 
+    
+    ln_x_H2O, ln_x_CO2, ln_H2O, ln_CO2, lnalphaG, ln_H2, ln_CH4, ln_CO, ln_x_N2, ln_N2 = sol.x
+
+    return np.exp(ln_x_H2O), np.exp(ln_x_CO2), np.exp(ln_H2O), np.exp(ln_CO2), np.exp(lnalphaG), np.exp(ln_H2), np.exp(ln_CH4), np.exp(ln_CO), np.exp(ln_x_N2), np.exp(ln_N2)
+    #gases in melt in bar
+
+def fcn1_nitrogen(y,args):
+    #x is in the melt, mol fraction
+    ln_x_H2O, ln_x_CO2, ln_H2O, ln_CO2, lnalphaG, ln_H2, ln_CH4, ln_CO, ln_x_N2, ln_N2 = y
+    P,F1,F2,xCO2tot,xH2Otot,xN2tot,C1,C2,C3,dIW,a_H2O,a_CO2,d_H2O, T = args
+    out = np.empty(10)
+    #all of these equations == 0
+    out[0] = np.exp(ln_H2O)+np.exp(ln_CO2)+np.exp(ln_H2)+np.exp(ln_CH4)+np.exp(ln_CO)+np.exp(ln_N2)-P #need to modify total pressure
+    out[1] = -ln_x_CO2+np.exp(ln_x_H2O)*d_H2O+a_CO2*ln_CO2+F1
+    out[2] = -ln_x_H2O+a_H2O*ln_H2O+F2
+    out[3] = -xH2Otot*P + (np.exp(ln_H2O)+np.exp(ln_H2)+2*np.exp(ln_CH4))*np.exp(lnalphaG)+(1-np.exp(lnalphaG))*np.exp(ln_x_H2O)*P
+    out[4] = -xCO2tot*P + (np.exp(ln_CO2)+np.exp(ln_CO)+np.exp(ln_CH4))*np.exp(lnalphaG)+(1-np.exp(lnalphaG))*np.exp(ln_x_CO2)*P
+    out[5] = np.log(C1)+ln_H2O-ln_H2
+    out[6] = np.log(C2)+ln_CO2-ln_CO
+    out[7] = np.log(C3)+ln_CO2+2*ln_H2O-ln_CH4
+    #adding nitrogen, pressure in GPa
+    pN2_Gpa = pn2 / 1e-4
+    pt_Gpa = P / 1e-4
+    M_magma = 1/0.01550152865954013
+    N_ppm = (np.exp(ln_x_N2) * M_N2 / M_magma)*1e6 #to ppm (eqn 3 Nicks paper)
+    #solubility of N2 in melt
+    out[8] = -N_ppm + np.sqrt(pN2_Gpa) * np.exp(5908*pt_Gpa**0.5/T - 1.6*dIW) + pN2_Gpa*np.exp(4.67 + 7.11 * XXSiO2 - 13.06*XXAl2O3 - 120.67*XXTiO2)
+    #conservation equation for N2 check this
+    out[9] = -xN2tot*P + np.exp(ln_N2)*np.exp(lnalphaG) + (1-np.exp(lnalphaG))*np.exp(ln_x_N2)*P #(after eqn 11,12)
+    return out 
+
+
 def degassing_pressure(T,DFMQ,mCO2tot,mH2Otot,P_range = [1e-4,30000]):
     """
     This function determines the overburden pressure where degassing begins.
